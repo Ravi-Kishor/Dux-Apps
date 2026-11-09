@@ -43,7 +43,8 @@ jobs:
           # Clone the latest upstream HEAD of each repository, including submodules.
           git clone --recurse-submodules https://github.com/duxlabs-dev/dux-calendar.git
           git clone --recurse-submodules https://github.com/duxlabs-dev/dux-gop.git
-          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-files.git
+          #git clone --recurse-submodules https://github.com/duxlabs-dev/dux-files.git
+          git clone --recurse-submodules https://github.com:krzyzak/dux-files.git
           git clone --recurse-submodules https://github.com/duxlabs-dev/dux-greeter.git
 
           for repo in dux-calendar dux-gop dux-files dux-greeter; do
