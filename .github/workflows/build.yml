@@ -1,15 +1,15 @@
-name: Build dux-qt-base-git
-
-permissions:
-  contents: write
+name: Build All Dux Apps (Calendar + GOP + Files + Greeter / Zen 3)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
 
 concurrency:
-  group: dux-qt-base-release
+  group: dux-apps-combined-release
   cancel-in-progress: false
 
 jobs:
@@ -19,223 +19,167 @@ jobs:
       image: archlinux:latest
 
     steps:
-      # -------------------------
-      # Update system
-      # -------------------------
-      - name: Update system
+      - name: Install build dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           pacman -Syu --noconfirm
-          pacman -S --noconfirm base-devel git curl sudo
+          pacman -S --needed --noconfirm \
+            base-devel git go make tar gzip coreutils findutils \
+            cmake ninja pkgconf qt6-base qt6-declarative qt6-shadertools vulkan-headers cli11 wayland-protocols pipewire polkit
+          go version
+          git --version
+          make --version | head -n 1
 
-      # -------------------------
-      # Install dependencies
-      # (cpptrace + jemalloc not needed: CRASH_HANDLER/USE_JEMALLOC default OFF)
-      # -------------------------
-      - name: Install dependencies
+      - name: Clone and build all four upstream repositories
+        id: build
+        shell: bash
         run: |
-          pacman -S --noconfirm --needed \
-            cmake ninja pkgconf clang lld cli11 \
-            qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools \
-            spirv-tools wayland wayland-protocols \
-            libdrm libxkbcommon libxcb libpipewire \
-            mesa libglvnd vulkan-headers vulkan-icd-loader \
-            pam polkit glib2 base-devel git go tar gzip coreutils findutils pipewire
+          set -euo pipefail
+          ROOT="$PWD/dux-build"
+          OUT="$PWD/release-assets"
+          mkdir -p "$ROOT" "$OUT"
+          cd "$ROOT"
 
-      # -------------------------
-      # Create builder
-      # -------------------------
-      - name: Create builder user
-        run: |
-          useradd -m builder
-          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          # Clone the latest upstream HEAD of each repository, including submodules.
+          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-calendar.git
+          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-gop.git
+          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-files.git
+          #git clone --recurse-submodules -b quicklook https://github.com/Ravi-Kishor/dux-files.git
+          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-greeter.git
 
-      # -------------------------
-      # Generate PKGBUILD
-      # -------------------------
-      - name: Create dux-qt-base PKGBUILD
-        run: |
-          mkdir -p /home/builder/pkg
-          cat > /home/builder/pkg/PKGBUILD <<'EOF'
-          pkgbase=dux-qt-base-git
-          pkgname=(dux-qt-base-git dux-qt-base-git-devel)
-          pkgver=0.0.0
-          pkgrel=1
-          pkgdesc="Quickshell runtime built as a shared library (libdux-qt-base.so)"
-          arch=(x86_64)
-          url="https://github.com/duxlabs-dev/dux-qt-base"
-          license=(LGPL-3.0-only)
-          options=(!debug !lto)
+          for repo in dux-calendar dux-gop dux-files dux-greeter; do
+            git -C "$repo" submodule sync --recursive
+            git -C "$repo" submodule update --init --recursive
+          done
 
-          makedepends=(
-            cmake
-            ninja
-            pkgconf
-            clang
-            lld
-            cli11
-            git
-            qt6-base
-            qt6-declarative
-            qt6-wayland
-            qt6-shadertools
-            qt6-svg
-            spirv-tools
-            wayland
-            wayland-protocols
-            vulkan-headers
-            libdrm
-            libxkbcommon
-            libxcb
-            libpipewire
-            mesa
-            libglvnd
-            pam
-            polkit
-            glib2
-          )
+          # Dux Calendar
+          cd "$ROOT/dux-calendar"
+          make
+          CAL_STAGE="$ROOT/stage-calendar"
+          mkdir -p "$CAL_STAGE"
+          make PREFIX=/usr DESTDIR="$CAL_STAGE" install
+          install -Dm0644 LICENSE "$CAL_STAGE/usr/share/licenses/dux-calendar/LICENSE"
+          install -Dm0644 README.md "$CAL_STAGE/usr/share/doc/dux-calendar/README.md"
+          CAL_COMMIT="$(git rev-parse HEAD)"
+          CAL_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
+          install -d "$CAL_STAGE/usr/share/doc/dux-calendar"
+          printf 'repository=https://github.com/duxlabs-dev/dux-calendar\ncommit=%s\nversion=%s\ngo_version=%s\n' \
+            "$CAL_COMMIT" "$CAL_VERSION" "$(go version)" \
+            > "$CAL_STAGE/usr/share/doc/dux-calendar/build-info.txt"
+          test -d "$CAL_STAGE/usr"
+          tar -C "$CAL_STAGE" -czf "$OUT/dux-calendar-x86_64.tar.gz" .
 
-          source=("dux-qt-base::git+https://github.com/duxlabs-dev/dux-qt-base.git#branch=master")
-          sha256sums=('SKIP')
+          # Dux GOP
+          cd "$ROOT/dux-gop"
+          make
+          GOP_STAGE="$ROOT/stage-gop"
+          mkdir -p "$GOP_STAGE"
+          # The current upstream GOP Makefile hard-codes /usr/local/bin and
+          # does not honor DESTDIR, so stage its built binary directly.
+          install -Dm0755 bin/dgop "$GOP_STAGE/usr/bin/dgop"
+          install -Dm0644 LICENSE "$GOP_STAGE/usr/share/licenses/dux-gop/LICENSE"
+          install -Dm0644 README.md "$GOP_STAGE/usr/share/doc/dux-gop/README.md"
+          GOP_COMMIT="$(git rev-parse HEAD)"
+          GOP_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
+          install -d "$GOP_STAGE/usr/share/doc/dux-gop"
+          printf 'repository=https://github.com/duxlabs-dev/dux-gop\ncommit=%s\nversion=%s\ngo_version=%s\n' \
+            "$GOP_COMMIT" "$GOP_VERSION" "$(go version)" \
+            > "$GOP_STAGE/usr/share/doc/dux-gop/build-info.txt"
+          tar -C "$GOP_STAGE" -czf "$OUT/dux-gop-x86_64.tar.gz" .
 
-          pkgver() {
-            cd "$srcdir/dux-qt-base"
-            if git describe --long --tags --abbrev=7 >/dev/null 2>&1; then
-              git describe --long --tags --abbrev=7 \
-                | sed 's/^v//;s/-/.r/;s/-/./'
-            else
-              printf "r%s.%s" \
-                "$(git rev-list --count HEAD)" \
-                "$(git rev-parse --short=7 HEAD)"
-            fi
-          }
+          # Dux Files
+          cd "$ROOT/dux-files"
+          make
+          FILES_STAGE="$ROOT/stage-files"
+          mkdir -p "$FILES_STAGE"
+          make PREFIX=/usr DESTDIR="$FILES_STAGE" install
+          install -Dm0644 LICENSE "$FILES_STAGE/usr/share/licenses/dux-files/LICENSE"
+          install -Dm0644 README.md "$FILES_STAGE/usr/share/doc/dux-files/README.md"
+          FILES_COMMIT="$(git rev-parse HEAD)"
+          FILES_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
+          install -d "$FILES_STAGE/usr/share/doc/dux-files"
+          printf 'repository=https://github.com/duxlabs-dev/dux-files\ncommit=%s\nversion=%s\ngo_version=%s\n' \
+            "$FILES_COMMIT" "$FILES_VERSION" "$(go version)" \
+            > "$FILES_STAGE/usr/share/doc/dux-files/build-info.txt"
+          tar -C "$FILES_STAGE" -czf "$OUT/dux-files-x86_64.tar.gz" .
 
-          build() {
-            cd "$srcdir/dux-qt-base"
+          # Dux Greeter: build with embedded Dux Qt Base.
+          # QTBASE=1 enables the Dux Qt Base submodule integration.
+          # Do not enable --qs-child or DMS_GREETER_QS_CHILD.
+          cd "$ROOT/dux-greeter"
+          make QTBASE=1 build
 
-            _flags="-pthread -O2 -pipe -march=znver3 -mtune=znver3 -ffunction-sections -fdata-sections -fvisibility-inlines-hidden"
-            _ldflags="-fuse-ld=lld -Wl,-O1 -Wl,--as-needed -Wl,--gc-sections"
+          GREETER_STAGE="$ROOT/stage-greeter"
+          mkdir -p "$GREETER_STAGE"
+          make PREFIX=/usr DESTDIR="$GREETER_STAGE" install
+          install -Dm0644 LICENSE "$GREETER_STAGE/usr/share/licenses/dux-greeter/LICENSE"
+          install -Dm0644 README.md "$GREETER_STAGE/usr/share/doc/dux-greeter/README.md"
+          GREETER_COMMIT="$(git rev-parse HEAD)"
+          GREETER_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
+          install -d "$GREETER_STAGE/usr/share/doc/dux-greeter"
+          printf 'repository=https://github.com/duxlabs-dev/dux-greeter\ncommit=%s\nversion=%s\ngo_version=%s\nqtbase=embedded\n' \
+            "$GREETER_COMMIT" "$GREETER_VERSION" "$(go version)" \
+            > "$GREETER_STAGE/usr/share/doc/dux-greeter/build-info.txt"
+          test -x "$GREETER_STAGE/usr/bin/dms-greeter"
+          tar -C "$GREETER_STAGE" -czf "$OUT/dux-greeter-x86_64.tar.gz" .
 
-            CC=clang CXX=clang++ cmake -B build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX=/usr \
-              -DCMAKE_INSTALL_LIBDIR=lib \
-              -DDISTRIBUTOR="GitHub Actions (dux-qt-base-git)" \
-              -DGIT_REVISION="$(git rev-parse HEAD)" \
-              -DCMAKE_C_FLAGS="$_flags" \
-              -DCMAKE_CXX_FLAGS="$_flags" \
-              -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
-              -DCMAKE_CXX_FLAGS_RELEASE="-O2 -DNDEBUG" \
-              -DCMAKE_SHARED_LINKER_FLAGS="$_ldflags" \
-              -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
-              -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
-              -DHYPRLAND=OFF \
-              -DI3=OFF \
-              -DX11=OFF
+          # Fail if any expected release artifact is missing or empty.
+          for artifact in \
+            "$OUT/dux-calendar-x86_64.tar.gz" \
+            "$OUT/dux-gop-x86_64.tar.gz" \
+            "$OUT/dux-files-x86_64.tar.gz" \
+            "$OUT/dux-greeter-x86_64.tar.gz"; do
+            test -s "$artifact"
+            sha256sum "$artifact"
+          done
 
-            cmake --build build --parallel "$(nproc)"
-          }
+          # One release tag for this combined build, based on all four source commits.
+          TAG="dux-apps-${CAL_COMMIT:0:8}-${GOP_COMMIT:0:8}-${FILES_COMMIT:0:8}-${GREETER_COMMIT:0:8}"
+          {
+            echo "tag=$TAG"
+            echo "calendar_commit=$CAL_COMMIT"
+            echo "gop_commit=$GOP_COMMIT"
+            echo "files_commit=$FILES_COMMIT"
+            echo "greeter_commit=$GREETER_COMMIT"
+            echo "calendar_version=$CAL_VERSION"
+            echo "gop_version=$GOP_VERSION"
+            echo "files_version=$FILES_VERSION"
+            echo "greeter_version=$GREETER_VERSION"
+          } >> "$GITHUB_OUTPUT"
 
-          package_dux-qt-base-git() {
-            depends=(
-              gcc-libs
-              glibc
-              libdrm
-              libxkbcommon
-              libxcb
-              libpipewire
-              libglvnd
-              mesa
-              pam
-              polkit
-              glib2
-              qt6-base
-              qt6-declarative
-              qt6-wayland
-              wayland
-            )
-            optdepends=('qt6-svg: svg images and icons')
-            provides=(dux-qt-base libdux-qt-base.so)
-            conflicts=(dux-qt-base)
+          {
+            echo "## Combined Dux Apps build"
+            echo
+            echo "All four repositories were fetched at their latest upstream HEAD and built in the same workflow run."
+            echo
+            echo "| Component | Upstream commit | Upstream version | SHA-256 |"
+            echo "|---|---|---|---|"
+            echo "| Dux Calendar | $CAL_COMMIT | $CAL_VERSION | $(sha256sum "$OUT/dux-calendar-x86_64.tar.gz" | cut -d' ' -f1) |"
+            echo "| Dux GOP | $GOP_COMMIT | $GOP_VERSION | $(sha256sum "$OUT/dux-gop-x86_64.tar.gz" | cut -d' ' -f1) |"
+            echo "| Dux Files | $FILES_COMMIT | $FILES_VERSION | $(sha256sum "$OUT/dux-files-x86_64.tar.gz" | cut -d' ' -f1) |"
+            echo "| Dux Greeter | $GREETER_COMMIT | $GREETER_VERSION | $(sha256sum "$OUT/dux-greeter-x86_64.tar.gz" | cut -d' ' -f1) |"
+            echo
+            echo "Architecture: x86_64. Build environment: Arch Linux container."
+            echo "Dux Greeter: QTBASE=1 enabled; Dux Qt Base integration embedded."
+            echo "Upstream Quickshell child mode: disabled."
+            echo
+            echo "Each archive contains files staged under /usr; extract from the filesystem root to install. Review archive contents before installing."
+          } > "$OUT/release-notes.md"
 
-            cd "$srcdir/dux-qt-base"
-            DESTDIR="$pkgdir" cmake --install build
-
-            # runtime = .so.0 + .so.<version> only
-            rm -rf "$pkgdir/usr/include" "$pkgdir/usr/lib/pkgconfig"
-            rm -f "$pkgdir/usr/lib/libdux-qt-base.so"
-          }
-
-          package_dux-qt-base-git-devel() {
-            pkgdesc+=" (development files)"
-            depends=("dux-qt-base-git=$pkgver-$pkgrel")
-            provides=(dux-qt-base-devel)
-            conflicts=(dux-qt-base-devel)
-
-            cd "$srcdir/dux-qt-base"
-            DESTDIR="$srcdir/stage" cmake --install build
-
-            # dev = .so symlink + .pc + header
-            install -d "$pkgdir/usr/lib/pkgconfig" "$pkgdir/usr/include"
-            cp -a "$srcdir/stage/usr/lib/libdux-qt-base.so" "$pkgdir/usr/lib/"
-            cp -a "$srcdir/stage/usr/lib/pkgconfig/dux-qt-base.pc" "$pkgdir/usr/lib/pkgconfig/"
-            cp -a "$srcdir/stage/usr/include/dux-qt-base" "$pkgdir/usr/include/"
-          }
-          EOF
-
-      # -------------------------
-      # Show effective flags (proves this yml version is the one running)
-      # -------------------------
-      - name: Show build flags
-        run: |
-          echo "yml-version: pthread-pch-o2-v2"
-          grep -nE 'pthread|PRECOMPILE|FLAGS_RELEASE' /home/builder/pkg/PKGBUILD
-
-      # -------------------------
-      # Build package
-      # -------------------------
-      - name: Build dux-qt-base packages
-        run: |
-          chown -R builder:builder /home/builder
-          su builder -c '
-            export PACKAGER="Ravi Kishor <github@ravi>"
-            export MAKEFLAGS="-j$(nproc)"
-            cd ~/pkg
-            makepkg -s --noconfirm
-          '
-
-      # -------------------------
-      # Prepare release
-      # -------------------------
-      - name: Prepare release files
-        id: pkg
-        run: |
-          mkdir -p release
-          cp /home/builder/pkg/*.pkg.tar.zst release/
-
-          RUNTIME_PKG=$(ls release/*.pkg.tar.zst | grep -v -- '-devel-' | head -n1)
-          VERSION=$(pacman -Qp "$RUNTIME_PKG" | awk '{print $2}')
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      # -------------------------
-      # Upload artifact
-      # -------------------------
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dux-qt-base-release
-          path: release/*.pkg.tar.zst
-
-      # -------------------------
-      # GitHub Release
-      # -------------------------
-      - name: Create GitHub Release
+      - name: Publish one combined GitHub Release with four assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.pkg.outputs.version }}-znver3
-          name: dux-qt-base-git ${{ steps.pkg.outputs.version }} (znver3)
-          files: release/*.pkg.tar.zst
+          tag_name: ${{ steps.build.outputs.tag }}
+          name: Dux Apps Combined Build (Calendar + GOP + Files + Greeter / ${{ github.run_number }})
           overwrite_files: true
           fail_on_unmatched_files: true
+          make_latest: true
+          body_path: release-assets/release-notes.md
+          files: |
+            release-assets/dux-calendar-x86_64.tar.gz
+            release-assets/dux-gop-x86_64.tar.gz
+            release-assets/dux-files-x86_64.tar.gz
+            release-assets/dux-greeter-x86_64.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
