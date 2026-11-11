@@ -26,7 +26,7 @@ jobs:
           pacman -Syu --noconfirm
           pacman -S --needed --noconfirm \
             base-devel git go make tar gzip coreutils findutils \
-            cmake ninja pkgconf qt6-base qt6-declarative
+            cmake ninja pkgconf qt6-base qt6-declarative qt6-shadertools vulkan-headers
           go version
           git --version
           make --version | head -n 1
