@@ -1,219 +1,169 @@
 
-name: Build All Dux Apps (Arch Packages / Zen 3)
+name: Build Dux Apps - Arch Linux x86-64-v3
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 */6 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
 
 permissions:
   contents: write
 
-concurrency:
-  group: dux-apps-combined-release
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+
     container:
       image: archlinux:latest
 
     steps:
+      - name: Checkout Dux Apps
+        uses: actions/checkout@v4
+
       - name: Install build dependencies
-        shell: bash
         run: |
-          set -euo pipefail
-
           pacman -Syu --noconfirm
-
           pacman -S --needed --noconfirm \
-            base-devel binutils git go make tar gzip zstd \
-            coreutils findutils file \
-            cmake ninja pkgconf \
-            qt6-base qt6-declarative qt6-shadertools \
-            vulkan-headers cli11 wayland-protocols \
-            pipewire polkit greetd quickshell
+            base-devel \
+            binutils \
+            git \
+            go \
+            make \
+            tar \
+            gzip \
+            zstd \
+            coreutils \
+            findutils \
+            file \
+            cmake \
+            ninja \
+            pkgconf \
+            qt6-base \
+            qt6-declarative \
+            qt6-shadertools \
+            vulkan-headers \
+            cli11 \
+            wayland-protocols \
+            pipewire \
+            polkit \
+            greetd \
+            quickshell
 
-          useradd --create-home builder
+      - name: Prepare builder
+        run: |
+          useradd --create-home --shell /bin/bash builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
 
-          go version
-          git --version
-          make --version | head -n 1
-          makepkg --version
-
-      - name: Clone and build all four upstream repositories
-        id: build
+      - name: Build and package applications
         shell: bash
         run: |
+          runuser -u builder -- env \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+            bash -s <<'BUILD'
+
           set -euo pipefail
 
-          # Zen 3 / x86-64-v3 optimization for every Go build.
+          ROOT="$GITHUB_WORKSPACE/dux-build"
+          SOURCES="$ROOT/sources"
+          STAGES="$ROOT/stages"
+          DIST="$ROOT/dist"
+
+          mkdir -p "$SOURCES" "$STAGES" "$DIST"
+
+          # All Go applications target Zen 3 / x86-64-v3.
           export GOAMD64=v3
 
-          ROOT="$PWD/dux-build"
-          OUT="$PWD/release-assets"
+          clone_repo() {
+            local name="$1"
+            local url="$2"
 
-          mkdir -p "$ROOT" "$OUT"
-          cd "$ROOT"
+            git clone --recurse-submodules "$url" "$SOURCES/$name"
+          }
 
-          # Clone latest upstream HEAD, including submodules.
-          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-calendar.git
-          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-gop.git
-          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-files.git
-          git clone --recurse-submodules https://github.com/duxlabs-dev/dux-greeter.git
+          clone_repo dux-calendar \
+            https://github.com/duxlabs-dev/dux-calendar.git
 
-          for repo in dux-calendar dux-gop dux-files dux-greeter; do
-            git -C "$repo" submodule sync --recursive
-            git -C "$repo" submodule update --init --recursive
-          done
+          clone_repo dux-gop \
+            https://github.com/duxlabs-dev/dux-gop.git
 
-          # --------------------------------------------------
-          # Dux Calendar
-          # --------------------------------------------------
+          clone_repo dux-files \
+            https://github.com/duxlabs-dev/dux-files.git
 
-          cd "$ROOT/dux-calendar"
+          clone_repo dux-greeter \
+            https://github.com/duxlabs-dev/dux-greeter.git
 
-          make
-
-          CAL_STAGE="$ROOT/stage-calendar"
+          # Build Dux Calendar.
+          CAL_STAGE="$STAGES/dux-calendar"
           mkdir -p "$CAL_STAGE"
 
+          cd "$SOURCES/dux-calendar"
+          make
           make PREFIX=/usr DESTDIR="$CAL_STAGE" install
-
-          install -Dm0644 LICENSE \
-            "$CAL_STAGE/usr/share/licenses/dux-calendar-git/LICENSE"
-
-          install -Dm0644 README.md \
-            "$CAL_STAGE/usr/share/doc/dux-calendar-git/README.md"
-
-          CAL_COMMIT="$(git rev-parse HEAD)"
-          CAL_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
-          CAL_PKGVER="0.0.0.r$(git rev-list --count HEAD).g${CAL_COMMIT:0:8}"
-
-          install -d "$CAL_STAGE/usr/share/doc/dux-calendar-git"
-
-          printf 'repository=https://github.com/duxlabs-dev/dux-calendar\ncommit=%s\nversion=%s\ngo_version=%s\ngoamd64=%s\n' \
-            "$CAL_COMMIT" "$CAL_VERSION" "$(go version)" "$GOAMD64" \
-            > "$CAL_STAGE/usr/share/doc/dux-calendar-git/build-info.txt"
 
           test -x "$CAL_STAGE/usr/bin/dcal"
 
-          # --------------------------------------------------
-          # Dux GOP
-          # --------------------------------------------------
+          # Build Dux GOP.
+          GOP_STAGE="$STAGES/dux-gop"
+          mkdir -p "$GOP_STAGE/usr/bin"
 
-          cd "$ROOT/dux-gop"
-
+          cd "$SOURCES/dux-gop"
           make
 
-          GOP_STAGE="$ROOT/stage-gop"
-          mkdir -p "$GOP_STAGE"
+          test -x bin/dgop
+          install -Dm755 bin/dgop "$GOP_STAGE/usr/bin/dgop"
 
-          # Upstream GOP Makefile hard-codes /usr/local/bin
-          # and does not honor DESTDIR.
-          install -Dm0755 bin/dgop \
-            "$GOP_STAGE/usr/bin/dgop"
-
-          install -Dm0644 LICENSE \
-            "$GOP_STAGE/usr/share/licenses/dux-gop-git/LICENSE"
-
-          install -Dm0644 README.md \
-            "$GOP_STAGE/usr/share/doc/dux-gop-git/README.md"
-
-          GOP_COMMIT="$(git rev-parse HEAD)"
-          GOP_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
-          GOP_PKGVER="0.0.0.r$(git rev-list --count HEAD).g${GOP_COMMIT:0:8}"
-
-          install -d "$GOP_STAGE/usr/share/doc/dux-gop-git"
-
-          printf 'repository=https://github.com/duxlabs-dev/dux-gop\ncommit=%s\nversion=%s\ngo_version=%s\ngoamd64=%s\n' \
-            "$GOP_COMMIT" "$GOP_VERSION" "$(go version)" "$GOAMD64" \
-            > "$GOP_STAGE/usr/share/doc/dux-gop-git/build-info.txt"
-
-          test -x "$GOP_STAGE/usr/bin/dgop"
-
-          # --------------------------------------------------
-          # Dux Files
-          # --------------------------------------------------
-
-          cd "$ROOT/dux-files"
-
-          make
-
-          FILES_STAGE="$ROOT/stage-files"
+          # Build Dux Files.
+          FILES_STAGE="$STAGES/dux-files"
           mkdir -p "$FILES_STAGE"
 
+          cd "$SOURCES/dux-files"
+          make
           make PREFIX=/usr DESTDIR="$FILES_STAGE" install
-
-          install -Dm0644 LICENSE \
-            "$FILES_STAGE/usr/share/licenses/dux-files-git/LICENSE"
-
-          install -Dm0644 README.md \
-            "$FILES_STAGE/usr/share/doc/dux-files-git/README.md"
-
-          FILES_COMMIT="$(git rev-parse HEAD)"
-          FILES_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
-          FILES_PKGVER="0.0.0.r$(git rev-list --count HEAD).g${FILES_COMMIT:0:8}"
-
-          install -d "$FILES_STAGE/usr/share/doc/dux-files-git"
-
-          printf 'repository=https://github.com/duxlabs-dev/dux-files\ncommit=%s\nversion=%s\ngo_version=%s\ngoamd64=%s\n' \
-            "$FILES_COMMIT" "$FILES_VERSION" "$(go version)" "$GOAMD64" \
-            > "$FILES_STAGE/usr/share/doc/dux-files-git/build-info.txt"
 
           test -x "$FILES_STAGE/usr/bin/dfiles"
 
-          # --------------------------------------------------
-          # Dux Greeter
-          # --------------------------------------------------
-
-          cd "$ROOT/dux-greeter"
-
-          # Embedded Dux Qt Base integration.
-          # Quickshell child mode remains disabled.
-          make QTBASE=1 build
-
-          GREETER_STAGE="$ROOT/stage-greeter"
+          # Build Dux Greeter with the Qt Base integration.
+          GREETER_STAGE="$STAGES/dux-greeter"
           mkdir -p "$GREETER_STAGE"
 
+          cd "$SOURCES/dux-greeter"
+          make QTBASE=1 build
           make QTBASE=1 PREFIX=/usr DESTDIR="$GREETER_STAGE" install
-
-          install -Dm0644 LICENSE \
-            "$GREETER_STAGE/usr/share/licenses/greetd-dms-greeter-git/LICENSE"
-
-          install -Dm0644 README.md \
-            "$GREETER_STAGE/usr/share/doc/greetd-dms-greeter-git/README.md"
-
-          GREETER_COMMIT="$(git rev-parse HEAD)"
-          GREETER_VERSION="$(git describe --tags --always 2>/dev/null || git rev-parse --short=7 HEAD)"
-          GREETER_PKGVER="0.0.0.r$(git rev-list --count HEAD).g${GREETER_COMMIT:0:8}"
-
-          install -d "$GREETER_STAGE/usr/share/doc/greetd-dms-greeter-git"
-
-          printf 'repository=https://github.com/duxlabs-dev/dux-greeter\ncommit=%s\nversion=%s\ngo_version=%s\ngoamd64=%s\nqtbase=embedded\n' \
-            "$GREETER_COMMIT" "$GREETER_VERSION" "$(go version)" "$GOAMD64" \
-            > "$GREETER_STAGE/usr/share/doc/greetd-dms-greeter-git/build-info.txt"
 
           test -x "$GREETER_STAGE/usr/bin/dms-greeter"
 
-          # --------------------------------------------------
-          # Verify x86-64-v3 Go binaries
-          # --------------------------------------------------
+          # Add license and README files to package payloads.
+          add_docs() {
+            local repo="$1"
+            local stage="$2"
+            local package="$3"
 
+            if [[ -f "$repo/LICENSE" ]]; then
+              install -Dm644 "$repo/LICENSE" \
+                "$stage/usr/share/licenses/$package/LICENSE"
+            fi
+
+            if [[ -f "$repo/README.md" ]]; then
+              install -Dm644 "$repo/README.md" \
+                "$stage/usr/share/doc/$package/README.md"
+            fi
+          }
+
+          add_docs "$SOURCES/dux-calendar" "$CAL_STAGE" dux-calendar-git
+          add_docs "$SOURCES/dux-gop" "$GOP_STAGE" dux-gop-git
+          add_docs "$SOURCES/dux-files" "$FILES_STAGE" dux-files-git
+          add_docs "$SOURCES/dux-greeter" "$GREETER_STAGE" greetd-dms-greeter-git
+
+          # Verify the Go compiler target in every application.
           verify_go_binary() {
             local binary="$1"
-            local info
 
-            test -x "$binary"
-
-            info="$(go version -m "$binary")"
-            printf '%s\n' "$info"
-
-            if ! grep -q 'GOAMD64=v3' <<< "$info"; then
-              echo "::error::GOAMD64=v3 verification failed: $binary"
-              return 1
-            fi
+            echo "Checking: $binary"
+            go version -m "$binary" | grep -F 'GOAMD64=v3'
           }
 
           verify_go_binary "$CAL_STAGE/usr/bin/dcal"
@@ -221,33 +171,46 @@ jobs:
           verify_go_binary "$FILES_STAGE/usr/bin/dfiles"
           verify_go_binary "$GREETER_STAGE/usr/bin/dms-greeter"
 
-          # --------------------------------------------------
-          # Create real Arch Linux packages
-          # --------------------------------------------------
-
+          # Create a standalone Arch package from a staged filesystem.
           build_arch_package() {
             local name="$1"
-            local version="$2"
-            local description="$3"
+            local stage="$2"
+            local repo="$3"
             local dependencies="$4"
-            local repository="$5"
-            local stage="$6"
 
-            local PKGDIR="$ROOT/pkgbuild-$name"
-            local PACKAGE_FILE
+            local count
+            local short_sha
+            local pkgver
+            local pkgdir
+            local payload
+            local output_dir
+            local package_file
+            local package_count
 
-            mkdir -p "$PKGDIR/payload"
+            cd "$repo"
 
-            cp -a "$stage/." "$PKGDIR/payload/"
+            count="$(git rev-list --count HEAD)"
+            short_sha="$(git rev-parse --short=8 HEAD)"
+            pkgver="0.0.0.r${count}.g${short_sha}"
 
-            cat > "$PKGDIR/PKGBUILD" <<EOF
+            pkgdir="$ROOT/pkgbuild-$name"
+            payload="$pkgdir/payload"
+            output_dir="$pkgdir/out"
+
+            rm -rf "$pkgdir"
+            mkdir -p "$payload" "$output_dir"
+
+            cp -a "$stage/." "$payload/"
+
+            cat > "$pkgdir/PKGBUILD" <<EOF
           pkgname='$name'
-          pkgver='$version'
+          pkgver='$pkgver'
           pkgrel=1
-          pkgdesc='$description'
+          pkgdesc='Dux Labs application - x86-64-v3 build'
           arch=('x86_64')
-          url='$repository'
+          url='https://github.com/duxlabs-dev'
           license=('custom')
+          options=('!debug')
           depends=($dependencies)
           source=()
           sha256sums=()
@@ -258,156 +221,112 @@ jobs:
           }
           EOF
 
-            chown -R builder:builder "$PKGDIR"
+            cd "$pkgdir"
 
-            echo "Building Arch package: $name"
+            # Keep package creation unprivileged.
+            PKGDEST="$output_dir" makepkg \
+              --nodeps \
+              --cleanbuild \
+              --noconfirm \
+              --force
 
-            su builder -s /bin/bash -c \
-              "cd '$PKGDIR' && makepkg --nodeps --clean --noconfirm --force"
+            # Select only the main package, never the -debug package.
+            mapfile -t packages < <(
+              find "$output_dir" -maxdepth 1 -type f \
+                -name "${name}-*.pkg.tar.zst" \
+                ! -name '*-debug-*'
+            )
 
-            shopt -s nullglob
-            local packages=( "$PKGDIR"/*.pkg.tar.zst )
-            shopt -u nullglob
+            package_count="${#packages[@]}"
 
-            if (( ${#packages[@]} != 1 )); then
-              echo "::error::Expected exactly one package for $name"
+            if [[ "$package_count" -ne 1 ]]; then
+              echo "Expected one main package for $name, found $package_count"
+              find "$output_dir" -maxdepth 1 -type f -printf '%f\n'
               return 1
             fi
 
-            PACKAGE_FILE="$OUT/${name}-${version}-1-x86_64_v3.pkg.tar.zst"
+            package_file="${packages[0]}"
 
-            cp "${packages[0]}" "$PACKAGE_FILE"
+            install -Dm644 "$package_file" \
+              "$DIST/${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
 
-            test -s "$PACKAGE_FILE"
-
-            echo "Created: $PACKAGE_FILE"
+            echo "Created: ${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
           }
 
-          # Build each package independently.
+          # Package all four applications independently.
           build_arch_package \
-            "dux-calendar-git" \
-            "$CAL_PKGVER" \
-            "Calendar application from Dux Labs" \
-            "'quickshell'" \
-            "https://github.com/duxlabs-dev/dux-calendar" \
-            "$CAL_STAGE"
+            dux-calendar-git \
+            "$CAL_STAGE" \
+            "$SOURCES/dux-calendar" \
+            "'quickshell'"
 
           build_arch_package \
-            "dux-gop-git" \
-            "$GOP_PKGVER" \
-            "System package integration tool from Dux Labs" \
-            "" \
-            "https://github.com/duxlabs-dev/dux-gop" \
-            "$GOP_STAGE"
+            dux-gop-git \
+            "$GOP_STAGE" \
+            "$SOURCES/dux-gop" \
+            ""
 
           build_arch_package \
-            "dux-files-git" \
-            "$FILES_PKGVER" \
-            "File manager from Dux Labs" \
-            "'quickshell'" \
-            "https://github.com/duxlabs-dev/dux-files" \
-            "$FILES_STAGE"
+            dux-files-git \
+            "$FILES_STAGE" \
+            "$SOURCES/dux-files" \
+            "'quickshell'"
 
           build_arch_package \
-            "greetd-dms-greeter-git" \
-            "$GREETER_PKGVER" \
-            "Dux greetd greeter with embedded Qt Base" \
-            "'greetd' 'quickshell'" \
-            "https://github.com/duxlabs-dev/dux-greeter" \
-            "$GREETER_STAGE"
+            greetd-dms-greeter-git \
+            "$GREETER_STAGE" \
+            "$SOURCES/dux-greeter" \
+            "'greetd' 'quickshell'"
 
-          # --------------------------------------------------
-          # Verify packages and generate checksums
-          # --------------------------------------------------
+          # Generate checksums.
+          cd "$DIST"
+          sha256sum *.pkg.tar.zst > SHA256SUMS
 
-          PACKAGES=(
-            "$OUT/dux-calendar-git-${CAL_PKGVER}-1-x86_64_v3.pkg.tar.zst"
-            "$OUT/dux-gop-git-${GOP_PKGVER}-1-x86_64_v3.pkg.tar.zst"
-            "$OUT/dux-files-git-${FILES_PKGVER}-1-x86_64_v3.pkg.tar.zst"
-            "$OUT/greetd-dms-greeter-git-${GREETER_PKGVER}-1-x86_64_v3.pkg.tar.zst"
-          )
+          BUILD
 
-          : > "$OUT/SHA256SUMS"
+      - name: Generate release metadata
+        id: meta
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:8}"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=dux-apps-${GITHUB_RUN_NUMBER}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-          for package in "${PACKAGES[@]}"; do
-            test -s "$package"
-
-            echo "Verifying package: $(basename "$package")"
-
-            bsdtar -tf "$package" >/dev/null
-
-            sha256sum "$package" >> "$OUT/SHA256SUMS"
-          done
-
-          # --------------------------------------------------
-          # Combined release tag
-          # --------------------------------------------------
-
-          TAG="dux-apps-${CAL_COMMIT:0:8}-${GOP_COMMIT:0:8}-${FILES_COMMIT:0:8}-${GREETER_COMMIT:0:8}"
-
-          {
-            echo "tag=$TAG"
-            echo "calendar_commit=$CAL_COMMIT"
-            echo "gop_commit=$GOP_COMMIT"
-            echo "files_commit=$FILES_COMMIT"
-            echo "greeter_commit=$GREETER_COMMIT"
-            echo "calendar_version=$CAL_VERSION"
-            echo "gop_version=$GOP_VERSION"
-            echo "files_version=$FILES_VERSION"
-            echo "greeter_version=$GREETER_VERSION"
-          } >> "$GITHUB_OUTPUT"
-
-          # --------------------------------------------------
-          # Release notes
-          # --------------------------------------------------
-
-          {
-            echo "## Dux Apps - Arch Linux Packages"
-            echo
-            echo "Four independent Arch Linux packages built from upstream HEAD."
-            echo
-            echo "| Package | Upstream version | Commit | SHA-256 |"
-            echo "|---|---|---|---|"
-            echo "| dux-calendar-git | $CAL_VERSION | $CAL_COMMIT | $(sha256sum "${PACKAGES[0]}" | cut -d' ' -f1) |"
-            echo "| dux-gop-git | $GOP_VERSION | $GOP_COMMIT | $(sha256sum "${PACKAGES[1]}" | cut -d' ' -f1) |"
-            echo "| dux-files-git | $FILES_VERSION | $FILES_COMMIT | $(sha256sum "${PACKAGES[2]}" | cut -d' ' -f1) |"
-            echo "| greetd-dms-greeter-git | $GREETER_VERSION | $GREETER_COMMIT | $(sha256sum "${PACKAGES[3]}" | cut -d' ' -f1) |"
-            echo
-            echo "### Build configuration"
-            echo
-            echo "- Architecture: x86-64-v3 (Zen 3 and newer)"
-            echo "- Go optimization: GOAMD64=v3"
-            echo "- Build environment: Arch Linux"
-            echo "- Dux Greeter: QTBASE=1"
-            echo "- Dux Greeter Quickshell child mode: disabled"
-            echo "- Package format: Arch Linux .pkg.tar.zst"
-            echo
-            echo "### Installation"
-            echo
-            echo 'Download the desired package and install it with:'
-            echo
-            echo '```bash'
-            echo 'sudo pacman -U ./package-name.pkg.tar.zst'
-            echo '```'
-            echo
-            echo "Dependencies are declared in the individual packages."
-            echo
-            echo "SHA256SUMS contains checksums for all four packages."
-            echo
-            echo "Note: x86-64-v3 packages require a compatible CPU (Zen 3 or newer for AMD)."
-          } > "$OUT/release-notes.md"
-
-      - name: Publish combined Arch Linux packages
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.build.outputs.tag }}
-          name: Dux Apps Combined Arch Packages (Zen 3 / x86-64-v3 / ${{ github.run_number }})
-          overwrite_files: true
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Dux Apps - Arch Linux x86-64-v3
+          body: |
+            ## Dux Apps - Arch Linux Packages
+
+            Optimized for x86-64-v3 (Zen 3 and newer).
+
+            ### Packages
+            - Dux Calendar
+            - Dux GOP
+            - Dux Files
+            - Dux Greeter
+
+            All Go binaries are built with `GOAMD64=v3`.
+            Dux Greeter is built with `QTBASE=1`.
+
+            Package architecture metadata remains `x86_64`.
+            The `_x86_64_v3` suffix identifies the optimized build target.
+
+            Install packages:
+
+            ```bash
+            sudo pacman -U ./*.pkg.tar.zst
+            ```
+
+            Verify checksums:
+
+            ```bash
+            sha256sum -c SHA256SUMS
+            ```
+          files: |
+            dux-build/dist/*.pkg.tar.zst
+            dux-build/dist/SHA256SUMS
           fail_on_unmatched_files: true
           make_latest: true
-          body_path: release-assets/release-notes.md
-          files: |
-            release-assets/*.pkg.tar.zst
-            release-assets/SHA256SUMS
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
