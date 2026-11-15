@@ -1,4 +1,3 @@
-```yaml
 name: Build Dux Apps - Arch Linux x86-64-v3
 
 on:
@@ -331,4 +330,3 @@ jobs:
             dux-build/dist/SHA256SUMS
           fail_on_unmatched_files: true
           make_latest: true
-```
