@@ -1,4 +1,4 @@
-
+```yaml
 name: Build Dux Apps - Arch Linux x86-64-v3
 
 on:
@@ -126,7 +126,7 @@ jobs:
 
           test -x "$FILES_STAGE/usr/bin/dfiles"
 
-          # Build Dux Greeter with the Qt Base integration.
+          # Build Dux Greeter with Qt Base integration.
           GREETER_STAGE="$STAGES/dux-greeter"
           mkdir -p "$GREETER_STAGE"
 
@@ -156,7 +156,7 @@ jobs:
           add_docs "$SOURCES/dux-calendar" "$CAL_STAGE" dux-calendar-git
           add_docs "$SOURCES/dux-gop" "$GOP_STAGE" dux-gop-git
           add_docs "$SOURCES/dux-files" "$FILES_STAGE" dux-files-git
-          add_docs "$SOURCES/dux-greeter" "$GREETER_STAGE" greetd-dms-greeter-git
+          add_docs "$SOURCES/dux-greeter" "$GREETER_STAGE" dux-greeter
 
           # Verify the Go compiler target in every application.
           verify_go_binary() {
@@ -186,6 +186,7 @@ jobs:
             local output_dir
             local package_file
             local package_count
+            local -a packages
 
             cd "$repo"
 
@@ -230,7 +231,7 @@ jobs:
               --noconfirm \
               --force
 
-            # Select only the main package, never the -debug package.
+            # Select only the main package, never the debug package.
             mapfile -t packages < <(
               find "$output_dir" -maxdepth 1 -type f \
                 -name "${name}-*.pkg.tar.zst" \
@@ -273,7 +274,7 @@ jobs:
             "'quickshell'"
 
           build_arch_package \
-            greetd-dms-greeter-git \
+            dux-greeter \
             "$GREETER_STAGE" \
             "$SOURCES/dux-greeter" \
             "'greetd' 'quickshell'"
@@ -306,7 +307,7 @@ jobs:
             - Dux Calendar
             - Dux GOP
             - Dux Files
-            - Dux Greeter
+            - Dux Greeter (dux-greeter)
 
             All Go binaries are built with `GOAMD64=v3`.
             Dux Greeter is built with `QTBASE=1`.
@@ -330,3 +331,4 @@ jobs:
             dux-build/dist/SHA256SUMS
           fail_on_unmatched_files: true
           make_latest: true
+```
