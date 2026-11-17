@@ -73,8 +73,12 @@ jobs:
 
           mkdir -p "$SOURCES" "$STAGES" "$DIST"
 
-          # All Go applications target Zen 3 / x86-64-v3.
+          # Target Zen 3 / x86-64-v3 instructions and aggressively optimize for Ryzen 5 5600GT APU
           export GOAMD64=v3
+          export CFLAGS="-march=znver3 -O3 -pipe -fno-plt -fexceptions \
+            -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security \
+            -fstack-clash-protection -fcf-protection"
+          export CXXFLAGS="$CFLAGS"
 
           clone_repo() {
             local name="$1"
@@ -115,7 +119,7 @@ jobs:
           test -x bin/dgop
           install -Dm755 bin/dgop "$GOP_STAGE/usr/bin/dgop"
 
-          # Build Dux Files.
+          # Build Dux Files (Staged internally, but excluded from final release bundle)
           FILES_STAGE="$STAGES/dux-files"
           mkdir -p "$FILES_STAGE"
 
@@ -176,6 +180,7 @@ jobs:
             local stage="$2"
             local repo="$3"
             local dependencies="$4"
+            local publish_to_dist="${5:-true}"
 
             local count
             local short_sha
@@ -223,14 +228,12 @@ jobs:
 
             cd "$pkgdir"
 
-            # Keep package creation unprivileged.
             PKGDEST="$output_dir" makepkg \
               --nodeps \
               --cleanbuild \
               --noconfirm \
               --force
 
-            # Select only the main package, never the debug package.
             mapfile -t packages < <(
               find "$output_dir" -maxdepth 1 -type f \
                 -name "${name}-*.pkg.tar.zst" \
@@ -241,46 +244,55 @@ jobs:
 
             if [[ "$package_count" -ne 1 ]]; then
               echo "Expected one main package for $name, found $package_count"
-              find "$output_dir" -maxdepth 1 -type f -printf '%f\n'
               return 1
             fi
 
             package_file="${packages[0]}"
 
-            install -Dm644 "$package_file" \
-              "$DIST/${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
-
-            echo "Created: ${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
+            # Only export to DIST if publish_to_dist is true
+            if [[ "$publish_to_dist" == "true" ]]; then
+              install -Dm644 "$package_file" \
+                "$DIST/${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
+              echo "Created and queued for release: ${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
+            else
+              echo "Built internally (skipped release publish): $(basename "$package_file")"
+            fi
           }
 
-          # Package all four applications independently.
+          # Package applications (dux-files-git is built and packaged locally, but publish_to_dist is false)
           build_arch_package \
             dux-calendar-git \
             "$CAL_STAGE" \
             "$SOURCES/dux-calendar" \
-            "'quickshell'"
+            "'quickshell'" \
+            true
 
           build_arch_package \
             dux-gop-git \
             "$GOP_STAGE" \
             "$SOURCES/dux-gop" \
-            ""
+            "" \
+            true
 
           build_arch_package \
             dux-files-git \
             "$FILES_STAGE" \
             "$SOURCES/dux-files" \
-            "'quickshell'"
+            "'quickshell'" \
+            false
 
           build_arch_package \
             dux-greeter \
             "$GREETER_STAGE" \
             "$SOURCES/dux-greeter" \
-            "'greetd' 'quickshell'"
+            "'greetd' 'quickshell'" \
+            true
 
-          # Generate checksums.
+          # Generate checksums only for released artifacts
           cd "$DIST"
-          sha256sum *.pkg.tar.zst > SHA256SUMS
+          if compgen -G "*.pkg.tar.zst" > /dev/null; then
+            sha256sum *.pkg.tar.zst > SHA256SUMS
+          fi
 
           BUILD
 
@@ -300,19 +312,14 @@ jobs:
           body: |
             ## Dux Apps - Arch Linux Packages
 
-            Optimized for x86-64-v3 (Zen 3 and newer).
+            Optimized for x86-64-v3 (Zen 3 / Ryzen 5 5600GT APU).
 
             ### Packages
-            - Dux Calendar
-            - Dux GOP
-            #- Dux Files
-            - Dux Greeter (dux-greeter)
+            - Dux Calendar (`dux-calendar-git`)
+            - Dux GOP (`dux-gop-git`)
+            - Dux Greeter (`dux-greeter`)
 
-            All Go binaries are built with `GOAMD64=v3`.
-            Dux Greeter is built with `QTBASE=1`.
-
-            Package architecture metadata remains `x86_64`.
-            The `_x86_64_v3` suffix identifies the optimized build target.
+            All binaries are compiled natively with Zen 3 microarchitecture flags (`-march=znver3`) and Go `GOAMD64=v3`.
 
             Install packages:
 
