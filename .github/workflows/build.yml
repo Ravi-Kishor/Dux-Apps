@@ -73,11 +73,12 @@ jobs:
 
           mkdir -p "$SOURCES" "$STAGES" "$DIST"
 
-          # Target Zen 3 / x86-64-v3 instructions and aggressively optimize for Ryzen 5 5600GT APU
+          # Toggle release publishing per app without skipping builds.
+          RELEASE_DUX_FILES=false
+
+          # Target x86-64-v3 / Zen 3 (AMD Ryzen 5 5600GT APU).
           export GOAMD64=v3
-          export CFLAGS="-march=znver3 -O3 -pipe -fno-plt -fexceptions \
-            -Wp,-D_FORTIFY_SOURCE=3 -Wformat -Werror=format-security \
-            -fstack-clash-protection -fcf-protection"
+          export CFLAGS="-march=znver3 -O3 -pipe -fno-plt"
           export CXXFLAGS="$CFLAGS"
 
           clone_repo() {
@@ -119,7 +120,7 @@ jobs:
           test -x bin/dgop
           install -Dm755 bin/dgop "$GOP_STAGE/usr/bin/dgop"
 
-          # Build Dux Files (Staged internally, but excluded from final release bundle)
+          # Build Dux Files (kept in build & makepkg even when not released).
           FILES_STAGE="$STAGES/dux-files"
           mkdir -p "$FILES_STAGE"
 
@@ -180,7 +181,7 @@ jobs:
             local stage="$2"
             local repo="$3"
             local dependencies="$4"
-            local publish_to_dist="${5:-true}"
+            local publish="${5:-true}"
 
             local count
             local short_sha
@@ -244,22 +245,22 @@ jobs:
 
             if [[ "$package_count" -ne 1 ]]; then
               echo "Expected one main package for $name, found $package_count"
+              find "$output_dir" -maxdepth 1 -type f -printf '%f\n'
               return 1
             fi
 
             package_file="${packages[0]}"
 
-            # Only export to DIST if publish_to_dist is true
-            if [[ "$publish_to_dist" == "true" ]]; then
+            if [[ "$publish" == "true" ]]; then
               install -Dm644 "$package_file" \
                 "$DIST/${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
-              echo "Created and queued for release: ${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
+              echo "Created (released): ${name}-${pkgver}-1-x86_64_v3.pkg.tar.zst"
             else
-              echo "Built internally (skipped release publish): $(basename "$package_file")"
+              echo "Created (build-only, skipped release): $(basename "$package_file")"
             fi
           }
 
-          # Package applications (dux-files-git is built and packaged locally, but publish_to_dist is false)
+          # Package all four applications; toggle release inclusion cleanly.
           build_arch_package \
             dux-calendar-git \
             "$CAL_STAGE" \
@@ -279,7 +280,7 @@ jobs:
             "$FILES_STAGE" \
             "$SOURCES/dux-files" \
             "'quickshell'" \
-            false
+            "$RELEASE_DUX_FILES"
 
           build_arch_package \
             dux-greeter \
@@ -288,11 +289,9 @@ jobs:
             "'greetd' 'quickshell'" \
             true
 
-          # Generate checksums only for released artifacts
+          # Generate checksums for packages staged for release.
           cd "$DIST"
-          if compgen -G "*.pkg.tar.zst" > /dev/null; then
-            sha256sum *.pkg.tar.zst > SHA256SUMS
-          fi
+          sha256sum *.pkg.tar.zst > SHA256SUMS
 
           BUILD
 
@@ -312,14 +311,19 @@ jobs:
           body: |
             ## Dux Apps - Arch Linux Packages
 
-            Optimized for x86-64-v3 (Zen 3 / Ryzen 5 5600GT APU).
+            Optimized for x86-64-v3 (Zen 3 and newer).
 
             ### Packages
-            - Dux Calendar (`dux-calendar-git`)
-            - Dux GOP (`dux-gop-git`)
-            - Dux Greeter (`dux-greeter`)
+            - Dux Calendar
+            - Dux GOP
+            #- Dux Files
+            - Dux Greeter (dux-greeter)
 
-            All binaries are compiled natively with Zen 3 microarchitecture flags (`-march=znver3`) and Go `GOAMD64=v3`.
+            All Go binaries are built with `GOAMD64=v3`.
+            Dux Greeter is built with `QTBASE=1`.
+
+            Package architecture metadata remains `x86_64`.
+            The `_x86_64_v3` suffix identifies the optimized build target.
 
             Install packages:
 
