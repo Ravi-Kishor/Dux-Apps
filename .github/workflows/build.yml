@@ -305,7 +305,7 @@ jobs:
             ### Packages
             - Dux Calendar
             - Dux GOP
-            - Dux Files
+            #- Dux Files
             - Dux Greeter (dux-greeter)
 
             All Go binaries are built with `GOAMD64=v3`.
