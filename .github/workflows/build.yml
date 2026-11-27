@@ -122,7 +122,6 @@ jobs:
 
           # Target x86-64-v3 / Zen 3 (lean -O2 + relative relocs)
           export GOAMD64=v3
-          export GOFLAGS="-trimpath"
           export CFLAGS="-march=znver3 -mtune=znver3 -O2 -pipe -fno-plt"
           export CXXFLAGS="$CFLAGS"
           export LDFLAGS="-Wl,-O2,--as-needed,-z,pack-relative-relocs"
